@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.pdf2epub]
+# The engine package is kept under docs/engine so the static site can serve it
+# directly to Pyodide; tests and cli.py add that directory to sys.path.
+engine_path = "docs/engine"

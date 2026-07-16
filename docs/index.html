@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF → EPUB · in your browser</title>
+    <meta
+      name="description"
+      content="Convert text-based PDFs into clean, reflowable EPUBs entirely in your browser. Nothing is uploaded."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>"
+    />
+    <link rel="stylesheet" href="assets/css/style.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <h1>PDF&nbsp;→&nbsp;EPUB</h1>
+        <p class="tagline">
+          Clean, reflowable EPUBs that render properly in Apple Books —
+          converted <strong>entirely in your browser</strong>. Your file never
+          leaves your device.
+        </p>
+      </header>
+
+      <section class="card" id="dropcard">
+        <label class="drop" id="drop" for="file">
+          <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M19 13v6a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-6H3l9-9 9 9h-2Zm-8-1v5h2v-5h3l-4-4-4 4h3Z"
+            />
+          </svg>
+          <div class="drop-main">
+            Drop a PDF here or <span class="link">browse</span>
+          </div>
+          <div class="muted">
+            Text-based PDFs only. Scanned/image-only PDFs won't convert.
+          </div>
+          <div id="fname" class="fname"></div>
+          <input type="file" id="file" accept="application/pdf,.pdf" hidden />
+        </label>
+
+        <div class="fields">
+          <div>
+            <label for="title"
+              >Title <span class="muted">(optional)</span></label
+            >
+            <input
+              type="text"
+              id="title"
+              placeholder="Defaults to the PDF's metadata / filename"
+            />
+          </div>
+          <div>
+            <label for="author"
+              >Author <span class="muted">(optional)</span></label
+            >
+            <input
+              type="text"
+              id="author"
+              placeholder="Defaults to the PDF's metadata"
+            />
+          </div>
+        </div>
+
+        <button id="go" disabled>Convert to EPUB</button>
+      </section>
+
+      <section class="card status-card" id="statusCard" hidden>
+        <div class="status-row">
+          <span class="spinner" id="spinner"></span>
+          <span id="statusText">Warming up…</span>
+        </div>
+        <div class="log" id="log" aria-live="polite"></div>
+        <a id="download" class="download" hidden download>Download EPUB</a>
+      </section>
+
+      <footer>
+        <p class="muted">
+          Runs
+          <a href="https://pyodide.org" target="_blank" rel="noopener"
+            >Pyodide</a
+          >
+          + PyMuPDF compiled to WebAssembly. 100% client-side · no server · no
+          tracking.
+        </p>
+        <p class="muted" id="engineState">Initializing engine…</p>
+      </footer>
+    </main>
+
+    <script type="module" src="assets/js/app.js"></script>
+  </body>
+</html>

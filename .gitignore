@@ -1,8 +1,16 @@
+# Python
 venv/
-uploads/*
-outputs/*
-!uploads/.gitkeep
-!outputs/.gitkeep
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Local build artifacts
+*.epub
+
+# The PyMuPDF WASM wheel is a CI build artifact, not source.
+docs/vendor/*.whl
+
+# OS
 .DS_Store
+
+!docs/vendor/.gitkeep

@@ -20,8 +20,20 @@ Scanned/image-only PDFs have no extractable text (no OCR step).
 Usage:
     python converter.py INPUT.pdf OUTPUT.epub [--title "..."] [--author "..."]
 """
-import fitz, re, html, os, sys, zipfile, shutil, collections, tempfile, argparse, hashlib, statistics
+
+import argparse
+import collections
+import hashlib
+import html
+import os
+import re
+import shutil
+import statistics
+import tempfile
+import zipfile
 import xml.etree.ElementTree as ET
+
+import fitz
 
 # ---- per-run state (set by run(); one conversion per process) ----
 doc = None
@@ -37,25 +49,55 @@ BODY_SIZE = 11.0
 BODY_LEFT = 72.0
 PAGE_W = 612.0
 PAGE_H = 792.0
-CHROME = set()            # normalized header/footer strings
-REPEATED_XREFS = set()    # image xrefs that repeat across pages (decorative)
-KNOWN_HYPHENS = set()     # real compounds seen hyphenated mid-line (e.g. "real-time")
+CHROME = set()  # normalized header/footer strings
+REPEATED_XREFS = set()  # image xrefs that repeat across pages (decorative)
+KNOWN_HYPHENS = set()  # real compounds seen hyphenated mid-line (e.g. "real-time")
 chapters = []
 subentries = collections.defaultdict(list)
 fig_counter = 0
 
-MONO_HINTS = ("mono", "courier", "consol", "menlo", "inconsol", "typewriter",
-              "sourcecode", "andalemono", "lucidacons", "lettergothic", "pragmata",
-              "dejavusansmono", "cousine", "ibmplexmono", "notosansmono", "fixed")
-BOLD_HINTS = ("bold", "black", "heavy", "semibold", "demibold", "demi", "extrab", "ultrab")
+MONO_HINTS = (
+    "mono",
+    "courier",
+    "consol",
+    "menlo",
+    "inconsol",
+    "typewriter",
+    "sourcecode",
+    "andalemono",
+    "lucidacons",
+    "lettergothic",
+    "pragmata",
+    "dejavusansmono",
+    "cousine",
+    "ibmplexmono",
+    "notosansmono",
+    "fixed",
+)
+BOLD_HINTS = (
+    "bold",
+    "black",
+    "heavy",
+    "semibold",
+    "demibold",
+    "demi",
+    "extrab",
+    "ultrab",
+)
 ITAL_HINTS = ("italic", "oblique")
 
-CAP_RE = re.compile(r"^\s*(figure|fig\.|table|listing|example|plate|exhibit)\s*[\d]", re.I)
+CAP_RE = re.compile(
+    r"^\s*(figure|fig\.|table|listing|example|plate|exhibit)\s*[\d]", re.I
+)
 FRONT_BACK_RE = re.compile(
     r"^\s*(dedication|preface|foreword|acknowledg|about (the|this)|glossary|"
     r"bibliography|colophon|index|contents|table of contents|copyright|"
-    r"references|notes|afterword|epilogue|prologue|credits|revision|appendix)\b", re.I)
-SELF_NUM_RE = re.compile(r"^\s*(chapter|part|appendix|section|lesson|unit|book)\b|^\s*\d+[.:) ]", re.I)
+    r"references|notes|afterword|epilogue|prologue|credits|revision|appendix)\b",
+    re.I,
+)
+SELF_NUM_RE = re.compile(
+    r"^\s*(chapter|part|appendix|section|lesson|unit|book)\b|^\s*\d+[.:) ]", re.I
+)
 
 
 # ---------- dictionary for de-hyphenation ----------
@@ -75,16 +117,20 @@ def is_mono(font):
     f = font.lower()
     return any(h in f for h in MONO_HINTS)
 
+
 def is_bold(font, flags=0):
     f = font.lower()
     return any(h in f for h in BOLD_HINTS) or bool(flags & 16)
+
 
 def is_italic(font, flags=0):
     f = font.lower()
     return any(h in f for h in ITAL_HINTS) or bool(flags & 2)
 
+
 def norm(t):
     return re.sub(r"[^a-z0-9]+", "", t.lower())
+
 
 def line_text(spans):
     return "".join(s["text"] for s in spans)
@@ -93,23 +139,34 @@ def line_text(spans):
 # ---------- block model ----------
 class Blk:
     __slots__ = ("x0", "y0", "x1", "y1", "lines")
+
     def __init__(s, b):
         s.x0, s.y0, s.x1, s.y1 = b["bbox"]
-        s.lines = [{"bbox": ln["bbox"], "spans": ln["spans"]} for ln in b["lines"] if ln["spans"]]
+        s.lines = [
+            {"bbox": ln["bbox"], "spans": ln["spans"]}
+            for ln in b["lines"]
+            if ln["spans"]
+        ]
+
     @property
     def text(s):
-        return " ".join(line_text(l["spans"]) for l in s.lines)
+        return " ".join(line_text(ln["spans"]) for ln in s.lines)
+
     @property
     def rect(s):
         return fitz.Rect(s.x0, s.y0, s.x1, s.y1)
 
+
 def block_profile(blk):
     census = collections.Counter()
-    for l in blk.lines:
-        for s in l["spans"]:
-            census[(s["font"], round(s["size"], 1), s.get("flags", 0))] += max(1, len(s["text"].strip()))
+    for ln in blk.lines:
+        for s in ln["spans"]:
+            census[(s["font"], round(s["size"], 1), s.get("flags", 0))] += max(
+                1, len(s["text"].strip())
+            )
     (font, size, flags), _ = census.most_common(1)[0]
     return font, size, flags
+
 
 def is_chrome(blk):
     """Running header/footer or bare page number."""
@@ -120,10 +177,11 @@ def is_chrome(blk):
         if not t:
             return True
         if re.fullmatch(r"[\divxlcdmIVXLCDM\-–—.,()\s]+", t):
-            return True   # page number / roman numeral
+            return True  # page number / roman numeral
         if norm_chrome(t) in CHROME:
             return True
     return False
+
 
 def norm_chrome(t):
     return re.sub(r"\s+", " ", re.sub(r"\d+", "#", t)).strip().lower()
@@ -164,7 +222,7 @@ def profile_document():
                     top_bot[nt] += 1
             if is_mono(font):
                 continue
-            nchars = sum(len(s["text"]) for l in blk.lines for s in l["spans"])
+            nchars = sum(len(s["text"]) for ln in blk.lines for s in ln["spans"])
             size_hist[round(size * 2) / 2] += nchars
             left_hist[round(blk.x0)] += len(blk.lines)
     for pno in range(doc.page_count):
@@ -185,20 +243,29 @@ def profile_document():
 def clean_title(t):
     return re.sub(r"\s+", " ", t).strip()
 
+
 def build_chapters():
     global chapters, subentries
     chapters, subentries = [], collections.defaultdict(list)
     toc = doc.get_toc()
 
     if not toc:
-        chapters.append({"id": "text", "disp": META_TITLE, "title": META_TITLE,
-                         "start": 0, "end": doc.page_count})
+        chapters.append(
+            {
+                "id": "text",
+                "disp": META_TITLE,
+                "title": META_TITLE,
+                "start": 0,
+                "end": doc.page_count,
+            }
+        )
         return
 
-    level_counts = collections.Counter(l for l, _, _ in toc)
-    chap_level = next((L for L in sorted(level_counts) if level_counts[L] >= 3),
-                      min(level_counts))
-    entries = [(clean_title(t), p - 1) for l, t, p in toc if l == chap_level]
+    level_counts = collections.Counter(lvl for lvl, _, _ in toc)
+    chap_level = next(
+        (L for L in sorted(level_counts) if level_counts[L] >= 3), min(level_counts)
+    )
+    entries = [(clean_title(t), p - 1) for lvl, t, p in toc if lvl == chap_level]
 
     self_num = sum(1 for t, _ in entries if SELF_NUM_RE.match(t)) >= 2
     num = 0
@@ -207,7 +274,11 @@ def build_chapters():
         end = entries[i + 1][1] if i + 1 < len(entries) else doc.page_count
         end = max(end, start + 1)
         # a print index / TOC is useless in a reflowable book (page numbers are gone)
-        if re.match(r"^\s*(index|table of contents|contents|list of (figures|tables))\s*$", title, re.I):
+        if re.match(
+            r"^\s*(index|table of contents|contents|list of (figures|tables))\s*$",
+            title,
+            re.I,
+        ):
             continue
         if self_num or FRONT_BACK_RE.match(title):
             disp = title
@@ -218,14 +289,16 @@ def build_chapters():
         while cid in used:
             cid += "x"
         used.add(cid)
-        chapters.append({"id": cid, "disp": disp, "title": title, "start": start, "end": end})
+        chapters.append(
+            {"id": cid, "disp": disp, "title": title, "start": start, "end": end}
+        )
 
-    for l, t, p in toc:
-        if l <= chap_level:
+    for lvl, t, p in toc:
+        if lvl <= chap_level:
             continue
         for ci, ch in enumerate(chapters):
             if ch["start"] <= p - 1 < ch["end"]:
-                subentries[ci].append((l - chap_level, clean_title(t), p - 1))
+                subentries[ci].append((lvl - chap_level, clean_title(t), p - 1))
                 break
 
 
@@ -248,19 +321,21 @@ def merge_rects(rects, gap=12):
         rects = out
     return rects
 
+
 def region_text_chars(page, rect):
     """Count ALL visible text characters whose center lies in rect."""
     n = 0
     for b in page.get_text("dict")["blocks"]:
         if b["type"] != 0:
             continue
-        for l in b["lines"]:
-            for s in l["spans"]:
+        for ln in b["lines"]:
+            for s in ln["spans"]:
                 cx = (s["bbox"][0] + s["bbox"][2]) / 2
                 cy = (s["bbox"][1] + s["bbox"][3]) / 2
                 if rect.contains(fitz.Point(cx, cy)):
                     n += len(s["text"].strip())
     return n
+
 
 def image_regions(page):
     """Return merged rectangles that should be rendered as figure images.
@@ -284,7 +359,7 @@ def image_regions(page):
             if r.width < 0.14 * pw or r.height < 0.045 * ph:
                 continue
             if r.get_area() > 0.85 * parea and total_chars > 200:
-                continue   # full-page background sitting behind text
+                continue  # full-page background sitting behind text
             cand.append(fitz.Rect(r))
 
     # vector drawing primitives
@@ -295,22 +370,26 @@ def image_regions(page):
             continue
         w, h = r.width, r.height
         if (h < 3 and w > 0.4 * pw) or (w < 3 and h > 0.4 * ph):
-            continue          # ruled line
+            continue  # ruled line
         if w < 4 or h < 4:
-            continue          # tiny stroke
+            continue  # tiny stroke
         if w > 0.85 * pw and h > 0.85 * ph:
-            continue          # page/content frame rectangle
+            continue  # page/content frame rectangle
         prims.append(r)
     for cl in merge_rects(prims, gap=16):
-        if cl.width < 0.18 * pw or cl.height < 0.05 * ph or cl.get_area() < 0.03 * parea:
+        if (
+            cl.width < 0.18 * pw
+            or cl.height < 0.05 * ph
+            or cl.get_area() < 0.03 * parea
+        ):
             continue
         n_prims = sum(1 for r in prims if cl.intersects(r))
         if n_prims < 5:
-            continue          # a real diagram is many strokes, not one box
+            continue  # a real diagram is many strokes, not one box
         chars = region_text_chars(page, cl)
         density = chars / (cl.get_area() / 1000.0)
         if chars > 140 or density > 2.5:
-            continue          # text-dense -> prose/code/table, not a diagram
+            continue  # text-dense -> prose/code/table, not a diagram
         cand.append(cl)
 
     out = []
@@ -319,7 +398,7 @@ def image_regions(page):
         if r.width < 0.14 * pw or r.height < 0.045 * ph:
             continue
         if r.get_area() > 0.7 * parea and region_text_chars(page, r) > 140:
-            continue          # never rasterize a whole text page
+            continue  # never rasterize a whole text page
         out.append(r)
     return out
 
@@ -348,7 +427,11 @@ def page_items(pno):
                 below = blk.y0 - r.y1
                 above = r.y0 - blk.y1
                 gap = below if below >= -4 else (above if above >= -4 else None)
-                if gap is not None and gap < 60 and abs((blk.x0 + blk.x1) / 2 - (r.x0 + r.x1) / 2) < 0.5 * PAGE_W:
+                if (
+                    gap is not None
+                    and gap < 60
+                    and abs((blk.x0 + blk.x1) / 2 - (r.x0 + r.x1) / 2) < 0.5 * PAGE_W
+                ):
                     if best is None or gap < best[0]:
                         best = (gap, bi, blk.text)
         if best:
@@ -371,9 +454,16 @@ def page_items(pno):
 
     # column detection: two columns only when a clear central gutter exists
     mid = PAGE_W / 2
-    straddle = sum(1 for k, y, x, p in items if k == "text"
-                   and p.x0 < mid - 0.05 * PAGE_W and p.x1 > mid + 0.05 * PAGE_W)
-    left = [it for it in items if (it[3].x1 if it[0] == "text" else it[3][0].x1) <= mid + 0.02 * PAGE_W]
+    straddle = sum(
+        1
+        for k, y, x, p in items
+        if k == "text" and p.x0 < mid - 0.05 * PAGE_W and p.x1 > mid + 0.05 * PAGE_W
+    )
+    left = [
+        it
+        for it in items
+        if (it[3].x1 if it[0] == "text" else it[3][0].x1) <= mid + 0.02 * PAGE_W
+    ]
     right = [it for it in items if it not in left]
     two_col = straddle <= 1 and len(left) >= 4 and len(right) >= 4
 
@@ -411,6 +501,7 @@ def fmt_spans(spans):
         out = out.replace(f"</{a}><{a}>", "")
     return re.sub(r"[ \t ]+", " ", out).strip()
 
+
 def join_lines(html_lines):
     out = ""
     for hl in html_lines:
@@ -427,8 +518,9 @@ def join_lines(html_lines):
                 # Default: a line-break hyphen is soft, so join. Keep it only when
                 # the compound is attested hyphenated elsewhere in the book, or the
                 # second part is a proper noun / capitalized (e.g. "non-POSIX").
-                keep = (joined not in DICT
-                        and (f"{w1.lower()}-{w2.lower()}" in KNOWN_HYPHENS or w2[:1].isupper()))
+                keep = joined not in DICT and (
+                    f"{w1.lower()}-{w2.lower()}" in KNOWN_HYPHENS or w2[:1].isupper()
+                )
                 if not keep:
                     out = out[: m.start()] + w1 + (m.group(2) or "") + hl
                     continue
@@ -441,11 +533,11 @@ def join_lines(html_lines):
 # ---------- code indentation ----------
 def code_charwidth(blk):
     ws = []
-    for l in blk.lines:
-        t = line_text(l["spans"]).rstrip()
+    for ln in blk.lines:
+        t = line_text(ln["spans"]).rstrip()
         n = len(t)
         if n >= 4:
-            ws.append((l["bbox"][2] - l["bbox"][0]) / n)
+            ws.append((ln["bbox"][2] - ln["bbox"][0]) / n)
     return statistics.median(ws) if ws else blk.lines[0]["spans"][0]["size"] * 0.5
 
 
@@ -461,28 +553,37 @@ class Emitter:
         self.code_cw = None
         self.table = None
         self.headings = []
+
     def flush_para(self):
         if self.para:
             txt = join_lines(self.para)
             if txt:
                 self.el.append((self.para_kind, txt))
         self.para, self.para_kind = [], "p"
+
     def flush_code(self):
         if self.code:
             self.el.append(("pre", "\n".join(self.code).strip("\n")))
         self.code, self.code_left, self.code_lasty, self.code_cw = [], None, None, None
+
     def flush_table(self):
         if self.table and self.table["rows"]:
             self.el.append(("table", self.table))
         self.table = None
+
     def flush_all(self):
-        self.flush_para(); self.flush_code(); self.flush_table()
+        self.flush_para()
+        self.flush_code()
+        self.flush_table()
+
 
 def looks_table_row(blk):
     """Multiple text clusters separated by wide horizontal gaps on each line."""
     multi = 0
-    for l in blk.lines:
-        xs = sorted((s["bbox"][0], s["bbox"][2]) for s in l["spans"] if s["text"].strip())
+    for ln in blk.lines:
+        xs = sorted(
+            (s["bbox"][0], s["bbox"][2]) for s in ln["spans"] if s["text"].strip()
+        )
         if not xs:
             continue
         gaps = 0
@@ -493,19 +594,28 @@ def looks_table_row(blk):
             multi += 1
     return multi >= max(1, len(blk.lines) // 2)
 
+
 def table_cols(blk):
-    xs = sorted({round(s["bbox"][0]) for l in blk.lines for s in l["spans"] if s["text"].strip()})
+    xs = sorted(
+        {
+            round(s["bbox"][0])
+            for ln in blk.lines
+            for s in ln["spans"]
+            if s["text"].strip()
+        }
+    )
     cols = []
     for x in xs:
         if not cols or x - cols[-1] > 14:
             cols.append(x)
     return cols
 
+
 def assign_cells(blk, cols):
     cells = [[] for _ in cols]
-    for l in blk.lines:
+    for ln in blk.lines:
         row = [[] for _ in cols]
-        for s in l["spans"]:
+        for s in ln["spans"]:
             if not s["text"].strip():
                 continue
             ci = 0
@@ -518,15 +628,17 @@ def assign_cells(blk, cols):
                 cells[j].append(fmt_spans(sp))
     return [" ".join(c).strip() for c in cells]
 
+
 def mono_frac(blk):
     mono = tot = 0
-    for l in blk.lines:
-        for s in l["spans"]:
+    for ln in blk.lines:
+        for s in ln["spans"]:
             c = len(s["text"].strip())
             tot += c
             if is_mono(s["font"]):
                 mono += c
     return (mono / tot) if tot else 0.0
+
 
 def is_code_like(blk, txt):
     """A mono block is a code display (vs. a lone identifier) if it spans
@@ -540,6 +652,7 @@ def is_code_like(blk, txt):
         return True
     return len(s) > 40
 
+
 def convert_chapter(ci, ch):
     global fig_counter
     em = Emitter()
@@ -548,7 +661,7 @@ def convert_chapter(ci, ch):
     items = []
     for pno in range(ch["start"], ch["end"]):
         for it in page_items(pno):
-            items.append((pno,) + it)   # (pno, kind, y, x, payload)
+            items.append((pno,) + it)  # (pno, kind, y, x, payload)
 
     # x0 of the next text block after each item (for definition-term lookahead)
     n = len(items)
@@ -566,8 +679,9 @@ def convert_chapter(ci, ch):
             em.flush_all()
             fig_counter += 1
             name = f"fig{fig_counter}.png"
-            doc[pno].get_pixmap(matrix=fitz.Matrix(2.4, 2.4), clip=r + (-4, -4, 4, 4)) \
-                    .save(os.path.join(OEBPS, "images", name))
+            doc[pno].get_pixmap(
+                matrix=fitz.Matrix(2.4, 2.4), clip=r + (-4, -4, 4, 4)
+            ).save(os.path.join(OEBPS, "images", name))
             em.el.append(("fig", (name, cap)))
             continue
 
@@ -578,7 +692,11 @@ def convert_chapter(ci, ch):
             continue
 
         # skip the chapter-title banner at the very top of the opener page
-        if pno == ch["start"] and blk.y0 < PAGE_H * 0.18 and norm(txt) == norm(ch["title"]):
+        if (
+            pno == ch["start"]
+            and blk.y0 < PAGE_H * 0.18
+            and norm(txt) == norm(ch["title"])
+        ):
             continue
 
         # ---- heading: match against the TOC (font-independent), else bold+large ----
@@ -589,9 +707,15 @@ def convert_chapter(ci, ch):
                 depth = dep
                 heads.pop(k)
                 break
-        if depth is None and not is_mono(font) and len(txt) < 90 and len(blk.lines) <= 2 \
-                and is_bold(font, flags) and size >= BODY_SIZE * 1.15 \
-                and not re.search(r"[.:;,]$", txt):
+        if (
+            depth is None
+            and not is_mono(font)
+            and len(txt) < 90
+            and len(blk.lines) <= 2
+            and is_bold(font, flags)
+            and size >= BODY_SIZE * 1.15
+            and not re.search(r"[.:;,]$", txt)
+        ):
             depth = 2
         if depth is not None:
             em.flush_all()
@@ -603,7 +727,8 @@ def convert_chapter(ci, ch):
 
         # ---- table caption ----
         if re.match(r"^\s*table\s+\S+", txt, re.I) and len(txt) < 120:
-            em.flush_para(); em.flush_code()
+            em.flush_para()
+            em.flush_code()
             if not (txt.lower().endswith("(continued)") and em.table):
                 em.flush_table()
                 em.table = {"caption": txt, "cols": None, "header": None, "rows": []}
@@ -624,9 +749,18 @@ def convert_chapter(ci, ch):
 
         # ---- definition term: short label at the margin whose next block is indented ----
         nx = next_text_x[i]
-        is_term = (blk.x0 <= BODY_LEFT + 8 and len(blk.lines) <= 2 and 0 < len(txt) < 70
-                   and not re.search(r"[.!?;,]$", txt)
-                   and (mfrac >= 0.5 or is_bold(font, flags) or is_italic(font, flags) or len(txt) < 45))
+        is_term = (
+            blk.x0 <= BODY_LEFT + 8
+            and len(blk.lines) <= 2
+            and 0 < len(txt) < 70
+            and not re.search(r"[.!?;,]$", txt)
+            and (
+                mfrac >= 0.5
+                or is_bold(font, flags)
+                or is_italic(font, flags)
+                or len(txt) < 45
+            )
+        )
         if is_term and nx is not None and nx > BODY_LEFT + 16:
             em.flush_all()
             em.el.append(("dt", fmt_block(blk)))
@@ -638,13 +772,16 @@ def convert_chapter(ci, ch):
             if em.code_left is None:
                 em.code_left = blk.x0
                 em.code_cw = code_charwidth(blk)
-            for l in blk.lines:
-                if em.code_lasty is not None and l["bbox"][1] - em.code_lasty > size * 1.7:
+            for ln in blk.lines:
+                if (
+                    em.code_lasty is not None
+                    and ln["bbox"][1] - em.code_lasty > size * 1.7
+                ):
                     em.code.append("")
-                em.code_lasty = l["bbox"][1]
-                raw = line_text(l["spans"])
+                em.code_lasty = ln["bbox"][1]
+                raw = line_text(ln["spans"])
                 if not raw.startswith(" ") and em.code_cw:
-                    ind = max(0, round((l["bbox"][0] - em.code_left) / em.code_cw))
+                    ind = max(0, round((ln["bbox"][0] - em.code_left) / em.code_cw))
                     raw = " " * ind + raw
                 em.code.append(html.escape(raw.rstrip()))
             continue
@@ -665,15 +802,19 @@ def convert_chapter(ci, ch):
             continue
 
         # ---- paragraph (or indented description) ----
-        lines_html = [h for h in (fmt_spans(l["spans"]) for l in blk.lines) if h]
+        lines_html = [h for h in (fmt_spans(ln["spans"]) for ln in blk.lines) if h]
         if not lines_html:
             continue
         kind_p = "dd" if blk.x0 > BODY_LEFT + 16 else "p"
         if em.para and em.para_kind == kind_p:
             prev = re.sub(r"<[^>]+>", "", em.para[-1]).strip()
             first = re.sub(r"<[^>]+>", "", lines_html[0]).strip()
-            cont = (prev and not re.search(r'[.!?:"”)]$', prev)
-                    and first and (first[:1].islower() or prev.endswith((",", ";", "-"))))
+            cont = (
+                prev
+                and not re.search(r'[.!?:"”)]$', prev)
+                and first
+                and (first[:1].islower() or prev.endswith((",", ";", "-")))
+            )
             if not cont:
                 em.flush_para()
         else:
@@ -684,21 +825,33 @@ def convert_chapter(ci, ch):
     em.flush_all()
     return em
 
+
 def fmt_spans_plain(blk):
-    return re.sub(r"\s+", " ", " ".join(line_text(l["spans"]) for l in blk.lines)).strip()
+    return re.sub(
+        r"\s+", " ", " ".join(line_text(ln["spans"]) for ln in blk.lines)
+    ).strip()
+
 
 def fmt_block(blk):
-    return join_lines([fmt_spans(l["spans"]) for l in blk.lines if fmt_spans(l["spans"])])
+    return join_lines(
+        [fmt_spans(ln["spans"]) for ln in blk.lines if fmt_spans(ln["spans"])]
+    )
 
 
 # ---------- HTML assembly ----------
 def esc(t):
     return html.escape(t)
 
-def esc_keep(t):
-    return t if re.search(r"</?(em|code|strong|b|sup)>", t) else html.escape(t, quote=False)
 
-XHTML_HEAD = '''<?xml version="1.0" encoding="utf-8"?>
+def esc_keep(t):
+    return (
+        t
+        if re.search(r"</?(em|code|strong|b|sup)>", t)
+        else html.escape(t, quote=False)
+    )
+
+
+XHTML_HEAD = """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en" lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -706,16 +859,19 @@ XHTML_HEAD = '''<?xml version="1.0" encoding="utf-8"?>
 <link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
 <body>
-'''
+"""
+
 
 def elements_to_html(ch, em):
     out = [f'<h1 id="{ch["id"]}">{esc(ch["disp"])}</h1>']
     li_open = False
+
     def close_li():
         nonlocal li_open
         if li_open:
             out.append("</ul>")
             li_open = False
+
     for kind, payload in em.el:
         if kind != "li":
             close_li()
@@ -734,19 +890,26 @@ def elements_to_html(ch, em):
             out.append(f'<p class="fn">{payload}</p>')
         elif kind == "li":
             if not li_open:
-                out.append('<ul>')
+                out.append("<ul>")
                 li_open = True
             out.append(f"<li>{payload}</li>")
         elif kind == "fig":
             img, cap = payload
-            fc = f'<figcaption>{esc_keep(cap)}</figcaption>' if cap else ""
+            fc = f"<figcaption>{esc_keep(cap)}</figcaption>" if cap else ""
             alt = esc(cap) if cap else "Figure"
             out.append(f'<figure><img src="images/{img}" alt="{alt}"/>{fc}</figure>')
         elif kind == "table":
             tb = payload
-            rows = [f'<p class="tcap">{esc_keep(tb["caption"])}</p>', '<div class="tw"><table>']
+            rows = [
+                f'<p class="tcap">{esc_keep(tb["caption"])}</p>',
+                '<div class="tw"><table>',
+            ]
             if tb["header"]:
-                rows.append("<thead><tr>" + "".join(f"<th>{c}</th>" for c in tb["header"]) + "</tr></thead>")
+                rows.append(
+                    "<thead><tr>"
+                    + "".join(f"<th>{c}</th>" for c in tb["header"])
+                    + "</tr></thead>"
+                )
             rows.append("<tbody>")
             for r in tb["rows"]:
                 rows.append("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>")
@@ -754,6 +917,7 @@ def elements_to_html(ch, em):
             out.append("".join(rows))
     close_li()
     return "\n".join(out)
+
 
 def write_chapter_file(ch, body):
     path = os.path.join(OEBPS, ch["id"] + ".xhtml")
@@ -763,8 +927,9 @@ def write_chapter_file(ch, body):
         f.write("\n</body>\n</html>\n")
     ET.parse(path)
 
+
 def write_css():
-    css = '''
+    css = """
 html, body { margin: 0; padding: 0; }
 body { text-align: justify; -webkit-hyphens: auto; hyphens: auto;
        line-height: 1.5; widows: 2; orphans: 2; }
@@ -804,25 +969,32 @@ th { border-bottom: 2px solid rgba(128,128,128,.6); }
 sup { font-size: .7em; line-height: 0; }
 .cover { text-align: center; margin: 0; padding: 0; }
 .cover img { max-width: 100%; max-height: 100%; }
-'''
+"""
     with open(os.path.join(OEBPS, "style.css"), "w") as f:
         f.write(css)
+
 
 def write_nav(items):
     li = []
     for disp, href, kids in items:
         sub = "".join(f'<li><a href="{k[2]}">{esc(k[1])}</a></li>' for k in kids)
-        li.append(f'<li><a href="{href}">{esc(disp)}</a><ol>{sub}</ol></li>' if sub
-                  else f'<li><a href="{href}">{esc(disp)}</a></li>')
+        li.append(
+            f'<li><a href="{href}">{esc(disp)}</a><ol>{sub}</ol></li>'
+            if sub
+            else f'<li><a href="{href}">{esc(disp)}</a></li>'
+        )
     with open(os.path.join(OEBPS, "nav.xhtml"), "w") as f:
         f.write(XHTML_HEAD.format(title="Table of Contents"))
         f.write('<nav epub:type="toc" id="toc"><h1>Table of Contents</h1><ol>\n')
         f.write("\n".join(li))
-        f.write('\n</ol></nav>\n<nav epub:type="landmarks" hidden="hidden"><ol>'
-                '<li><a epub:type="cover" href="cover.xhtml">Cover</a></li>'
-                f'<li><a epub:type="bodymatter" href="{items[0][1]}">Begin Reading</a></li>'
-                '</ol></nav>\n</body>\n</html>\n')
+        f.write(
+            '\n</ol></nav>\n<nav epub:type="landmarks" hidden="hidden"><ol>'
+            '<li><a epub:type="cover" href="cover.xhtml">Cover</a></li>'
+            f'<li><a epub:type="bodymatter" href="{items[0][1]}">Begin Reading</a></li>'
+            "</ol></nav>\n</body>\n</html>\n"
+        )
     ET.parse(os.path.join(OEBPS, "nav.xhtml"))
+
 
 def write_ncx(items):
     pts, n = [], 0
@@ -831,35 +1003,46 @@ def write_ncx(items):
         sub = ""
         for tag, txt, khref in kids:
             n += 1
-            sub += (f'<navPoint id="np{n}" playOrder="{n}"><navLabel><text>{esc(txt)}</text></navLabel>'
-                    f'<content src="{khref}"/></navPoint>')
-        pts.append(f'<navPoint id="np{n}" playOrder="{n}"><navLabel><text>{esc(disp)}</text></navLabel>'
-                   f'<content src="{href}"/>{sub}</navPoint>')
+            sub += (
+                f'<navPoint id="np{n}" playOrder="{n}"><navLabel><text>{esc(txt)}</text></navLabel>'
+                f'<content src="{khref}"/></navPoint>'
+            )
+        pts.append(
+            f'<navPoint id="np{n}" playOrder="{n}"><navLabel><text>{esc(disp)}</text></navLabel>'
+            f'<content src="{href}"/>{sub}</navPoint>'
+        )
     with open(os.path.join(OEBPS, "toc.ncx"), "w") as f:
-        f.write(f'''<?xml version="1.0" encoding="utf-8"?>
+        f.write(f"""<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
 <head><meta name="dtb:uid" content="{UID}"/></head>
 <docTitle><text>{esc(META_TITLE)}</text></docTitle>
 <navMap>{"".join(pts)}</navMap>
 </ncx>
-''')
+""")
     ET.parse(os.path.join(OEBPS, "toc.ncx"))
 
+
 def write_opf():
-    items = ['<item id="css" href="style.css" media-type="text/css"/>',
-             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
-             '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
-             '<item id="coverimg" href="images/cover.png" media-type="image/png" properties="cover-image"/>',
-             '<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>']
+    items = [
+        '<item id="css" href="style.css" media-type="text/css"/>',
+        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+        '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
+        '<item id="coverimg" href="images/cover.png" media-type="image/png" properties="cover-image"/>',
+        '<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>',
+    ]
     spine = ['<itemref idref="coverpage" linear="yes"/>']
     for ch in chapters:
-        items.append(f'<item id="{ch["id"]}" href="{ch["id"]}.xhtml" media-type="application/xhtml+xml"/>')
+        items.append(
+            f'<item id="{ch["id"]}" href="{ch["id"]}.xhtml" media-type="application/xhtml+xml"/>'
+        )
         spine.append(f'<itemref idref="{ch["id"]}"/>')
     for fn in sorted(os.listdir(os.path.join(OEBPS, "images"))):
         if fn.startswith("fig"):
-            items.append(f'<item id="{fn.split(".")[0]}" href="images/{fn}" media-type="image/png"/>')
+            items.append(
+                f'<item id="{fn.split(".")[0]}" href="images/{fn}" media-type="image/png"/>'
+            )
     with open(os.path.join(OEBPS, "content.opf"), "w") as f:
-        f.write(f'''<?xml version="1.0" encoding="utf-8"?>
+        f.write(f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid" xml:lang="en">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="uid">{UID}</dc:identifier>
@@ -876,7 +1059,7 @@ def write_opf():
 {chr(10).join(spine)}
 </spine>
 </package>
-''')
+""")
     ET.parse(os.path.join(OEBPS, "content.opf"))
 
 
@@ -891,7 +1074,15 @@ def clean_meta_title(raw, stem):
 
 
 # ---------- driver ----------
-def run(pdf_path, out_path, title=None, author=None, work_dir=None, modified=None, progress=None):
+def run(
+    pdf_path,
+    out_path,
+    title=None,
+    author=None,
+    work_dir=None,
+    modified=None,
+    progress=None,
+):
     global doc, BUILD, OEBPS, fig_counter, META_TITLE, META_AUTHOR, UID, MODIFIED
     fig_counter = 0
 
@@ -922,7 +1113,9 @@ def run(pdf_path, out_path, title=None, author=None, work_dir=None, modified=Non
     build_chapters()
     emit(f"Detected {len(chapters)} sections")
 
-    doc[0].get_pixmap(matrix=fitz.Matrix(2, 2)).save(os.path.join(OEBPS, "images", "cover.png"))
+    doc[0].get_pixmap(matrix=fitz.Matrix(2, 2)).save(
+        os.path.join(OEBPS, "images", "cover.png")
+    )
 
     nav_items, stats = [], collections.Counter()
     for ci, ch in enumerate(chapters):
@@ -930,42 +1123,61 @@ def run(pdf_path, out_path, title=None, author=None, work_dir=None, modified=Non
         write_chapter_file(ch, elements_to_html(ch, em))
         for k, _ in em.el:
             stats[k] += 1
-        kids = [(tag, txt, f'{ch["id"]}.xhtml#{hid}')
-                for tag, txt, hid, dep in em.headings if tag in ("h2", "h3")]
+        kids = [
+            (tag, txt, f'{ch["id"]}.xhtml#{hid}')
+            for tag, txt, hid, dep in em.headings
+            if tag in ("h2", "h3")
+        ]
         nav_items.append((ch["disp"], ch["id"] + ".xhtml", kids))
         emit(f"Converted {ch['disp']}")
 
     with open(os.path.join(OEBPS, "cover.xhtml"), "w") as f:
         f.write(XHTML_HEAD.format(title="Cover"))
-        f.write(f'<div class="cover"><img src="images/cover.png" alt="{esc(META_TITLE)}"/></div>')
+        f.write(
+            f'<div class="cover"><img src="images/cover.png" alt="{esc(META_TITLE)}"/></div>'
+        )
         f.write("\n</body>\n</html>\n")
 
-    write_css(); write_nav(nav_items); write_ncx(nav_items); write_opf()
+    write_css()
+    write_nav(nav_items)
+    write_ncx(nav_items)
+    write_opf()
     with open(os.path.join(BUILD, "META-INF", "container.xml"), "w") as f:
-        f.write('''<?xml version="1.0" encoding="utf-8"?>
+        f.write("""<?xml version="1.0" encoding="utf-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
 </container>
-''')
+""")
     with open(os.path.join(BUILD, "mimetype"), "w") as f:
         f.write("application/epub+zip")
 
     if os.path.exists(out_path):
         os.remove(out_path)
     with zipfile.ZipFile(out_path, "w") as zf:
-        zf.write(os.path.join(BUILD, "mimetype"), "mimetype", compress_type=zipfile.ZIP_STORED)
+        zf.write(
+            os.path.join(BUILD, "mimetype"),
+            "mimetype",
+            compress_type=zipfile.ZIP_STORED,
+        )
         for root, _, files in os.walk(BUILD):
             for fn in sorted(files):
                 rel = os.path.relpath(os.path.join(root, fn), BUILD)
                 if rel != "mimetype":
-                    zf.write(os.path.join(root, fn), rel, compress_type=zipfile.ZIP_DEFLATED)
+                    zf.write(
+                        os.path.join(root, fn), rel, compress_type=zipfile.ZIP_DEFLATED
+                    )
 
     doc.close()
     if work_dir is None:
         shutil.rmtree(tmp, ignore_errors=True)
     emit("Done")
-    return {"title": META_TITLE, "chapters": len(chapters), "figures": fig_counter,
-            "elements": dict(stats), "bytes": os.path.getsize(out_path)}
+    return {
+        "title": META_TITLE,
+        "chapters": len(chapters),
+        "figures": fig_counter,
+        "elements": dict(stats),
+        "bytes": os.path.getsize(out_path),
+    }
 
 
 def main():
@@ -975,8 +1187,13 @@ def main():
     ap.add_argument("--title")
     ap.add_argument("--author")
     args = ap.parse_args()
-    st = run(args.input, args.output, title=args.title, author=args.author,
-             progress=lambda m: print("[*]", m))
+    st = run(
+        args.input,
+        args.output,
+        title=args.title,
+        author=args.author,
+        progress=lambda m: print("[*]", m),
+    )
     print(st)
 
 

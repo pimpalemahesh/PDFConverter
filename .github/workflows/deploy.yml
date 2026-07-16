@@ -1,0 +1,86 @@
+name: Build wheel & deploy to Pages
+
+# Builds the PyMuPDF Pyodide (WebAssembly) wheel with cibuildwheel — mirroring
+# PyMuPDF's own green CI path — drops it into docs/vendor/, writes the manifest,
+# then publishes docs/ to GitHub Pages. The wheel is cached so most deploys skip
+# the ~30-minute build.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # Pin the source versions that produce a Pyodide 0.27.x / ABI 2024_0 wheel,
+  # matching PYODIDE_VERSION in docs/assets/js/worker.js.
+  PYMUPDF_REF: "1.24.14"
+  MUPDF_BUILD: "git:--branch 1.28.x https://github.com/ArtifexSoftware/mupdf"
+  CIBW_VERSION: "2.23.3"
+
+jobs:
+  build-wheel:
+    runs-on: ubuntu-latest
+    outputs:
+      wheel: ${{ steps.out.outputs.wheel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache built wheel
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: docs/vendor/*.whl
+          key: pymupdf-pyodide-${{ env.PYMUPDF_REF }}-${{ env.MUPDF_BUILD }}-cibw${{ env.CIBW_VERSION }}
+
+      - uses: actions/setup-python@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Build PyMuPDF Pyodide wheel
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install "cibuildwheel==${CIBW_VERSION}"
+          git clone --depth 1 --branch "${PYMUPDF_REF}" https://github.com/pymupdf/PyMuPDF pymupdf-src
+          cd pymupdf-src
+          # --cibw-pyodide mirrors PyMuPDF's tested Pyodide build; build MuPDF from a
+          # branch that carries the required Pyodide rpath changes.
+          python scripts/test.py -m "${MUPDF_BUILD}" --cibw-pyodide 1 cibw
+          mkdir -p "${GITHUB_WORKSPACE}/docs/vendor"
+          cp wheelhouse/*.whl "${GITHUB_WORKSPACE}/docs/vendor/"
+
+      - name: Write manifest
+        id: out
+        run: |
+          WHEEL="$(cd docs/vendor && ls *.whl | head -n1)"
+          echo "wheel=${WHEEL}" >> "$GITHUB_OUTPUT"
+          python - "$WHEEL" <<'PY'
+          import json, sys
+          json.dump({"pymupdf": sys.argv[1], "pyodide": "0.27.2",
+                     "built": True}, open("docs/vendor/manifest.json", "w"), indent=2)
+          PY
+          echo "Manifest:"; cat docs/vendor/manifest.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

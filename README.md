@@ -1,93 +1,150 @@
-# PDF → EPUB Converter
+# PDF → EPUB (browser edition)
 
-A small Flask web app that converts text-based PDFs into clean, **reflowable
-EPUB 3** files that render properly in Apple Books — justified and de-hyphenated
-paragraphs, styled code blocks, real HTML tables, extracted figures, a navigable
-table of contents, and dark-mode-safe styling.
+Convert text-based PDFs into clean, **reflowable EPUB 3** files that render
+properly in Apple Books — **entirely in the browser**. No server, no upload:
+the PDF is processed on the user's own device with Python compiled to
+WebAssembly. Deployable as a static site to GitHub Pages.
 
-Rather than hardcoding one book's fonts, the engine **profiles each PDF** — it
-learns the body text size, the text margin, and the running header/footer text —
-then classifies content by *relative* font metrics, so it works across PDFs from
-different publishers and tools (FrameMaker, Word/Distiller, etc.).
+**🔗 Live site:** https://pimpalemahesh.github.io/PDFConverter/
+&nbsp;·&nbsp; local preview: `python3 -m http.server -d docs 8000` → http://localhost:8000
 
-## Setup
+> The live site goes up once this repo is pushed and **Settings → Pages →
+> Source** is set to **GitHub Actions** (the deploy workflow builds the wheel and
+> publishes it).
 
-```bash
-cd ~/code/projects/PDFConverter
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-```
+Justified, de-hyphenated paragraphs · styled code blocks · real tables ·
+extracted figures (raster + vector) · a navigable table of contents ·
+dark-mode-safe styling.
 
-## Run the server
-
-```bash
-./venv/bin/python app.py
-# then open http://127.0.0.1:5000
-```
-
-Drop a PDF onto the page, optionally set a title/author, and click **Convert**.
-The finished `.epub` appears in the "Converted books" list; downloaded files are
-also kept in `outputs/`. To open one in Apple Books, download it and double-click,
-or drag it into the Books app.
-
-## Command line
-
-The engine also runs standalone:
-
-```bash
-./venv/bin/python converter.py input.pdf output.epub --title "My Book" --author "Someone"
-```
+---
 
 ## How it works
 
-`converter.py` reads the PDF with PyMuPDF, profiles it, then classifies content
-by relative font metrics to reconstruct document structure:
+```
+Browser (main thread, app.js)
+        │  file bytes ─ transfer ─▶
+        ▼
+Web Worker (worker.js)
+        │  loadPyodide()  ── CDN
+        │  loadPackage(vendor/PyMuPDF-…-wasm32.whl)   ← built in CI
+        │  import pdf2epub  (engine/pdf2epub/converter.py)
+        ▼
+pdf2epub.run(in.pdf → out.epub)   ← the exact same Python engine used by cli.py
+        │  EPUB bytes ─ transfer ─▶
+        ▼
+Browser triggers download
+```
 
-- **Body text** is re-flowed into real paragraphs, removing the PDF's hard line
-  breaks and soft (line-break) hyphenation. Genuine compounds like `real-time`
-  are preserved by scanning the whole book for compounds that appear hyphenated
-  *mid-line* — a line-break hyphen is only kept if the compound is attested
-  elsewhere, which is far more reliable than a dictionary lookup.
-- **Code** is detected as *monospace-dominant* blocks that actually look like
-  code (multi-line or containing code punctuation), so lone identifiers aren't
-  boxed. Rendered as wrap-friendly `<pre>` with indentation measured from glyph
-  advances.
-- **Headings** are matched against the PDF's own table of contents
-  (font-independent), with a bold/large-size fallback; they map to
-  `<h1>`/`<h2>`/`<h3>` and feed the EPUB navigation. The chapter level is chosen
-  automatically, and the book's own numbering is respected (no double numbering).
-- **Figures** come from both **embedded raster images** and **vector line-art
-  clusters**, rendered as clipped PNGs. Decorative/repeated icons, page frames,
-  and text-dense regions (code, prose, indexes) are filtered out so only real
-  diagrams are captured. `Figure N`/`Table N` captions are attached automatically.
-- **Tables** are reconstructed as HTML tables by clustering cell x-positions.
-- **Definition lists, footnotes, and bullet lists** get their own styling.
-- Running headers/footers, page numbers, and the print index are dropped.
+- **`docs/`** is the entire static site (what GitHub Pages serves).
+- **`docs/engine/pdf2epub/converter.py`** is the conversion engine. The same
+  module runs under CPython (tests, `cli.py`) and under Pyodide (the browser),
+  because it depends only on **PyMuPDF + the Python standard library**.
+- **Pyodide** runs Python in the browser via WebAssembly, inside a **Web Worker**
+  so the UI never freezes and progress can stream live.
+- **PyMuPDF** can't be installed with `micropip` (it uses shared libraries), and
+  no prebuilt Pyodide wheel is published — so CI **compiles one** with
+  `cibuildwheel` (mirroring PyMuPDF's own tested Pyodide build) and drops it into
+  `docs/vendor/`, where `loadPackage()` loads it at runtime (same-origin, no CORS).
 
-Output is validated for XML well-formedness and correct EPUB packaging
-(`mimetype` stored first and uncompressed, resolvable nav anchors, no duplicate
-ids).
+The runtime Pyodide version (`PYODIDE_VERSION` in `docs/assets/js/worker.js`) and
+the wheel's ABI (`2024_0`) must match; both are pinned to Pyodide **0.27.x**.
+
+---
+
+## Project layout
+
+```
+PDFConverter/
+├── docs/                          # ← GitHub Pages root (static site)
+│   ├── index.html
+│   ├── .nojekyll
+│   ├── assets/
+│   │   ├── css/style.css
+│   │   └── js/
+│   │       ├── app.js             # UI controller (main thread)
+│   │       └── worker.js          # Pyodide runtime (Web Worker)
+│   ├── engine/pdf2epub/           # the Python engine (served to Pyodide)
+│   │   ├── __init__.py
+│   │   └── converter.py
+│   └── vendor/                    # PyMuPDF wheel + manifest (wheel built by CI)
+│       └── manifest.json
+├── .github/workflows/deploy.yml   # build wheel + deploy to Pages
+├── tests/test_engine.py           # engine tests (CPython)
+├── cli.py                         # local command-line entry point
+├── requirements-dev.txt           # dev/test deps only
+├── pyproject.toml
+└── LICENSE
+```
+
+---
+
+## Deploy to GitHub Pages
+
+1. Push this repository to GitHub (branch `main`).
+2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+3. The `deploy.yml` workflow runs automatically. Its first run builds the
+   PyMuPDF WebAssembly wheel (~20–30 min; cached afterwards), then publishes
+   `docs/`. Subsequent deploys reuse the cached wheel and take under a minute.
+4. Open the Pages URL. The engine warms up on load; drop in a PDF and convert.
+
+```bash
+git add -A && git commit -m "Browser-based PDF→EPUB converter"
+git remote add origin git@github.com:<you>/<repo>.git
+git push -u origin main
+```
+
+---
+
+## Local development
+
+```bash
+python3 -m venv venv
+./venv/bin/pip install -r requirements-dev.txt
+
+# run the engine tests (CPython)
+./venv/bin/python -m pytest
+
+# convert on the command line
+./venv/bin/python cli.py input.pdf output.epub --title "My Book"
+
+# preview the web UI (engine runs once a wheel is present in docs/vendor/)
+python3 -m http.server -d docs 8000     # → http://localhost:8000
+```
+
+To exercise the **full browser pipeline locally** you need a PyMuPDF Pyodide
+wheel in `docs/vendor/` and its filename in `manifest.json`. That wheel is a CI
+artifact (building it requires an Emscripten toolchain), so the usual path is to
+let the GitHub Actions workflow build it; the deployed site is the reference
+environment.
+
+---
+
+## Verification status
+
+Validated locally:
+
+- Engine tests pass under CPython (`pytest`), including a real-book check.
+- Under **real Pyodide 0.27.2**: the engine compiles, every stdlib import it uses
+  resolves, and `import pdf2epub` is blocked *only* by `fitz` — i.e. the code is
+  Pyodide-clean and will import as soon as the wheel loads.
+- `loadPackage(url)` (the wheel-loading mechanism) verified against Pyodide's CDN.
+- JS syntax-checked; workflow YAML and manifest JSON validated.
+
+Completed by CI on first deploy: the Emscripten wheel build and the in-browser
+`import fitz`. If that build ever needs tuning, the version pins live at the top
+of `deploy.yml` (`PYMUPDF_REF`, `MUPDF_BUILD`, `CIBW_VERSION`) and must stay
+ABI-compatible with `PYODIDE_VERSION` in `worker.js`.
+
+---
 
 ## Scope / limitations
 
 Works on digitally-produced (not scanned) single- and two-column PDFs. Verified
-end-to-end on two structurally different books — a FrameMaker O'Reilly title and
-a Word/Distiller title. Known limits:
+on two structurally different books (a FrameMaker O'Reilly title and a
+Word/Distiller title).
 
-- **Scanned/image-only PDFs won't produce text** — there is no OCR step (though
-  their page images would still be captured).
+- **Scanned / image-only PDFs** yield no text — there is no OCR step.
 - Very complex magazine-style layouts may reflow imperfectly.
-- Occasionally a decorative note/callout box drawn as vector art can be captured
-  as a figure (it still renders its real content); real captioned figures are
-  detected reliably.
+- Occasionally a decorative callout box drawn as vector art is captured as a
+  figure (it still shows its real content); captioned figures are reliable.
 - PDFs without an embedded outline fall back to a single-document EPUB.
-
-## Layout
-
-```
-converter.py        conversion engine (importable + CLI)
-app.py              Flask server
-templates/index.html  upload UI
-uploads/            transient upload storage (auto-cleaned per request)
-outputs/            generated .epub files
-```

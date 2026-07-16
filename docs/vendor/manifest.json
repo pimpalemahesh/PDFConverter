@@ -1,0 +1,5 @@
+{
+  "pymupdf": null,
+  "pyodide": "0.27.2",
+  "note": "Populated by .github/workflows/deploy.yml, which builds the PyMuPDF Pyodide wheel and drops it here. Until then the app reports that the engine has not been built."
+}
