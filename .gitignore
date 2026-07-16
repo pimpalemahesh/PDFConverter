@@ -3,14 +3,10 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 
-# Local build artifacts
+# Local build/convert artifacts
 *.epub
-
-# The PyMuPDF WASM wheel is a CI build artifact, not source.
-docs/vendor/*.whl
 
 # OS
 .DS_Store
-
-!docs/vendor/.gitkeep

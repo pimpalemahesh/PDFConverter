@@ -9,8 +9,7 @@ WebAssembly. Deployable as a static site to GitHub Pages.
 &nbsp;·&nbsp; local preview: `python3 -m http.server -d docs 8000` → http://localhost:8000
 
 > The live site goes up once this repo is pushed and **Settings → Pages →
-> Source** is set to **GitHub Actions** (the deploy workflow builds the wheel and
-> publishes it).
+> Source** is set to **GitHub Actions**.
 
 Justified, de-hyphenated paragraphs · styled code blocks · real tables ·
 extracted figures (raster + vector) · a navigable table of contents ·
@@ -25,8 +24,8 @@ Browser (main thread, app.js)
         │  file bytes ─ transfer ─▶
         ▼
 Web Worker (worker.js)
-        │  loadPyodide()  ── CDN
-        │  loadPackage(vendor/PyMuPDF-…-wasm32.whl)   ← built in CI
+        │  loadPyodide()          ── Pyodide CDN
+        │  loadPackage("pymupdf") ── bundled in Pyodide 0.28.1+
         │  import pdf2epub  (engine/pdf2epub/converter.py)
         ▼
 pdf2epub.run(in.pdf → out.epub)   ← the exact same Python engine used by cli.py
@@ -41,13 +40,13 @@ Browser triggers download
   because it depends only on **PyMuPDF + the Python standard library**.
 - **Pyodide** runs Python in the browser via WebAssembly, inside a **Web Worker**
   so the UI never freezes and progress can stream live.
-- **PyMuPDF** can't be installed with `micropip` (it uses shared libraries), and
-  no prebuilt Pyodide wheel is published — so CI **compiles one** with
-  `cibuildwheel` (mirroring PyMuPDF's own tested Pyodide build) and drops it into
-  `docs/vendor/`, where `loadPackage()` loads it at runtime (same-origin, no CORS).
+- **PyMuPDF** ships inside Pyodide's own distribution as of **0.28.1**, so it
+  loads by name with `loadPackage("pymupdf")` straight from the Pyodide CDN — no
+  build step, no self-hosted wheel, no `micropip` (which can't install it because
+  of its shared libraries). `PYODIDE_VERSION` in `docs/assets/js/worker.js` is
+  pinned to a release that bundles PyMuPDF.
 
-The runtime Pyodide version (`PYODIDE_VERSION` in `docs/assets/js/worker.js`) and
-the wheel's ABI (`2024_0`) must match; both are pinned to Pyodide **0.27.x**.
+There is nothing to compile: the whole app is static files.
 
 ---
 
@@ -63,12 +62,10 @@ PDFConverter/
 │   │   └── js/
 │   │       ├── app.js             # UI controller (main thread)
 │   │       └── worker.js          # Pyodide runtime (Web Worker)
-│   ├── engine/pdf2epub/           # the Python engine (served to Pyodide)
-│   │   ├── __init__.py
-│   │   └── converter.py
-│   └── vendor/                    # PyMuPDF wheel + manifest (wheel built by CI)
-│       └── manifest.json
-├── .github/workflows/deploy.yml   # build wheel + deploy to Pages
+│   └── engine/pdf2epub/           # the Python engine (served to Pyodide)
+│       ├── __init__.py
+│       └── converter.py
+├── .github/workflows/deploy.yml   # publish docs/ to Pages (no build step)
 ├── tests/test_engine.py           # engine tests (CPython)
 ├── cli.py                         # local command-line entry point
 ├── requirements-dev.txt           # dev/test deps only
@@ -82,15 +79,13 @@ PDFConverter/
 
 1. Push this repository to GitHub (branch `main`).
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
-3. The `deploy.yml` workflow runs automatically. Its first run builds the
-   PyMuPDF WebAssembly wheel (~20–30 min; cached afterwards), then publishes
-   `docs/`. Subsequent deploys reuse the cached wheel and take under a minute.
+3. The `deploy.yml` workflow runs automatically and publishes `docs/` (no build
+   step — it finishes in under a minute).
 4. Open the Pages URL. The engine warms up on load; drop in a PDF and convert.
 
 ```bash
 git add -A && git commit -m "Browser-based PDF→EPUB converter"
-git remote add origin git@github.com:<you>/<repo>.git
-git push -u origin main
+git push
 ```
 
 ---
@@ -107,33 +102,29 @@ python3 -m venv venv
 # convert on the command line
 ./venv/bin/python cli.py input.pdf output.epub --title "My Book"
 
-# preview the web UI (engine runs once a wheel is present in docs/vendor/)
+# preview the full web UI (fetches Pyodide + PyMuPDF from the CDN on first load)
 python3 -m http.server -d docs 8000     # → http://localhost:8000
 ```
 
-To exercise the **full browser pipeline locally** you need a PyMuPDF Pyodide
-wheel in `docs/vendor/` and its filename in `manifest.json`. That wheel is a CI
-artifact (building it requires an Emscripten toolchain), so the usual path is to
-let the GitHub Actions workflow build it; the deployed site is the reference
-environment.
+The web preview works out of the box — Pyodide and PyMuPDF are fetched from the
+CDN at runtime, so there is nothing to build or vendor locally.
 
 ---
 
 ## Verification status
 
-Validated locally:
+Validated end-to-end, locally:
 
 - Engine tests pass under CPython (`pytest`), including a real-book check.
-- Under **real Pyodide 0.27.2**: the engine compiles, every stdlib import it uses
-  resolves, and `import pdf2epub` is blocked *only* by `fitz` — i.e. the code is
-  Pyodide-clean and will import as soon as the wheel loads.
-- `loadPackage(url)` (the wheel-loading mechanism) verified against Pyodide's CDN.
-- JS syntax-checked; workflow YAML and manifest JSON validated.
+- The **full browser pipeline** was exercised under **real Pyodide 0.28.2** (the
+  same runtime the site uses): `loadPackage("pymupdf")` from the bundled
+  distribution, `import pdf2epub`, then a complete conversion of a 385-page book
+  to a valid EPUB (correct chapters, figures, and OCF packaging).
+- JS syntax-checked; workflow YAML validated; `black` + `prettier` clean; `ruff`
+  reports no issues.
 
-Completed by CI on first deploy: the Emscripten wheel build and the in-browser
-`import fitz`. If that build ever needs tuning, the version pins live at the top
-of `deploy.yml` (`PYMUPDF_REF`, `MUPDF_BUILD`, `CIBW_VERSION`) and must stay
-ABI-compatible with `PYODIDE_VERSION` in `worker.js`.
+To move to a newer Pyodide, bump `PYODIDE_VERSION` in `worker.js` to any release
+that bundles `pymupdf` (0.28.1+).
 
 ---
 

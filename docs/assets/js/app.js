@@ -30,7 +30,7 @@ worker.onmessage = (e) => {
       break;
     case "ready":
       engineReady = true;
-      engineState.textContent = `Engine ready · Pyodide ${m.pyodide} · ${m.pymupdf}`;
+      engineState.textContent = `Engine ready · Pyodide ${m.pyodide} · PyMuPDF (WebAssembly)`;
       refreshButton();
       break;
     case "progress":

@@ -1,16 +1,16 @@
 /* worker.js — runs Pyodide + the pdf2epub Python engine off the main thread.
  *
- * Loads a PyMuPDF WebAssembly wheel (built in CI, see .github/workflows/deploy.yml)
- * via loadPackage() — micropip cannot install PyMuPDF because of its shared libs.
- * The runtime Pyodide version below must share the wheel's ABI (2024_0).
+ * PyMuPDF ships inside Pyodide's own distribution (0.28.1+), so it loads by name
+ * via loadPackage("pymupdf") straight from the Pyodide CDN — no build step and
+ * no self-hosted wheel. Keep PYODIDE_VERSION at a release that bundles pymupdf.
  */
-const PYODIDE_VERSION = "0.27.2";
+const PYODIDE_VERSION = "0.28.2";
 importScripts(
   `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/pyodide.js`,
 );
 
-// Resolve URLs against the site root, not this script's /assets/js/ location,
-// so the app works whether hosted at a domain root or a project-pages subpath.
+// The engine module is served from this site; resolve it against the site root,
+// not this worker's /assets/js/ location, so project-pages subpaths work too.
 const ROOT = new URL("../../", self.location.href);
 
 let pyodide = null;
@@ -25,25 +25,7 @@ async function init() {
   });
 
   send("status", { message: "Loading PDF engine (PyMuPDF · WebAssembly)…" });
-  let manifest;
-  try {
-    const res = await fetch(new URL("vendor/manifest.json", ROOT), {
-      cache: "no-cache",
-    });
-    manifest = await res.json();
-  } catch (e) {
-    throw new Error(
-      "Could not read vendor/manifest.json — the PyMuPDF wheel has not been built. " +
-        "Run the GitHub Actions deploy workflow (it builds the wheel), or build one locally into docs/vendor/.",
-    );
-  }
-  if (!manifest.pymupdf) {
-    throw new Error(
-      "No PyMuPDF wheel listed in vendor/manifest.json. " +
-        "The deploy workflow builds it in CI; the app runs once that has completed.",
-    );
-  }
-  await pyodide.loadPackage(new URL(`vendor/${manifest.pymupdf}`, ROOT).href);
+  await pyodide.loadPackage("pymupdf");
 
   send("status", { message: "Loading converter…" });
   const src = await (
@@ -65,7 +47,7 @@ import pdf2epub
 `);
 
   ready = true;
-  send("ready", { pymupdf: manifest.pymupdf, pyodide: PYODIDE_VERSION });
+  send("ready", { pyodide: PYODIDE_VERSION });
 }
 
 const initPromise = init().catch((err) =>
