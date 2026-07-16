@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PDF → EPUB Converter</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         max-width: 720px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+         line-height: 1.55; color: #1a1a1a; background: #fafafa; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e8e8e8; background: #16171a; }
+    .card, .drop { background: #202226; border-color: #34363c; }
+    input[type=text] { background: #16171a; color: #e8e8e8; border-color: #3a3c42; }
+    .file-row { border-color: #34363c; }
+    .muted { color: #9aa0a6; }
+    .drop.hover { background: #262a33; }
+  }
+  h1 { font-size: 1.6rem; margin: 0 0 .3rem; }
+  .lead { margin: 0 0 1.6rem; color: #666; }
+  .muted { color: #777; font-size: .88rem; }
+  .card { background: #fff; border: 1px solid #e2e2e2; border-radius: 14px;
+          padding: 1.4rem; margin-bottom: 1.6rem; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .drop { border: 2px dashed #c7c7c7; border-radius: 12px; padding: 2rem 1rem;
+          text-align: center; cursor: pointer; transition: background .15s, border-color .15s;
+          background: #fbfbfb; }
+  .drop.hover { border-color: #2d7ff9; background: #f0f6ff; }
+  .drop strong { color: #2d7ff9; }
+  #fname { margin-top: .7rem; font-weight: 600; }
+  label.field { display: block; margin: 1rem 0 .3rem; font-size: .9rem; font-weight: 600; }
+  input[type=text] { width: 100%; padding: .6rem .7rem; border: 1px solid #d5d5d5;
+                     border-radius: 8px; font-size: .95rem; }
+  .row { display: flex; gap: .8rem; }
+  .row > div { flex: 1; }
+  button { font: inherit; border: none; border-radius: 9px; padding: .7rem 1.3rem;
+           background: #2d7ff9; color: #fff; font-weight: 600; cursor: pointer; margin-top: 1.2rem; }
+  button:hover { background: #1a6ae6; }
+  button:disabled { background: #9bbdf3; cursor: default; }
+  button.mini { padding: .35rem .7rem; font-size: .8rem; background: transparent;
+                color: #c0392b; margin: 0; }
+  button.mini:hover { background: rgba(192,57,43,.1); }
+  .flash { padding: .8rem 1rem; border-radius: 10px; margin-bottom: 1rem; font-size: .92rem; }
+  .flash.ok { background: #e7f6ec; color: #1e7a3d; }
+  .flash.error { background: #fdeceb; color: #c0392b; }
+  @media (prefers-color-scheme: dark) {
+    .flash.ok { background: #14351f; color: #7fd79b; }
+    .flash.error { background: #3a1c1a; color: #f0938a; }
+  }
+  .file-row { display: flex; align-items: center; justify-content: space-between;
+              gap: .8rem; padding: .7rem 0; border-bottom: 1px solid #eee; }
+  .file-row:last-child { border-bottom: none; }
+  .file-row a { color: #2d7ff9; text-decoration: none; font-weight: 600; }
+  .file-row a:hover { text-decoration: underline; }
+  .file-meta { display: flex; flex-direction: column; }
+  h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
+  #spinner { display:none; margin-top: 1rem; font-size: .9rem; color:#666; }
+  #spinner.on { display:block; }
+</style>
+</head>
+<body>
+  <h1>PDF → EPUB</h1>
+  <p class="lead">Turn a text-based PDF into a clean, reflowable EPUB that renders
+     properly in Apple Books.</p>
+
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in msgs %}
+      <div class="flash {{ cat }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <form class="card" method="post" action="{{ url_for('convert') }}"
+        enctype="multipart/form-data" id="form">
+    <label class="drop" id="drop" for="pdf">
+      <div>Drop a PDF here or <strong>browse</strong></div>
+      <div class="muted">Text PDFs only, up to {{ max_mb }} MB. Scanned/image PDFs won't convert.</div>
+      <div id="fname"></div>
+      <input type="file" id="pdf" name="pdf" accept="application/pdf,.pdf" hidden>
+    </label>
+
+    <div class="row">
+      <div>
+        <label class="field" for="title">Title <span class="muted">(optional)</span></label>
+        <input type="text" id="title" name="title" placeholder="Defaults to filename / PDF metadata">
+      </div>
+      <div>
+        <label class="field" for="author">Author <span class="muted">(optional)</span></label>
+        <input type="text" id="author" name="author" placeholder="Defaults to PDF metadata">
+      </div>
+    </div>
+
+    <button type="submit" id="go" disabled>Convert to EPUB</button>
+    <div id="spinner">Converting… this can take up to a minute for large books.</div>
+  </form>
+
+  <div class="card">
+    <h2>Converted books</h2>
+    {% if files %}
+      {% for f in files %}
+        <div class="file-row">
+          <div class="file-meta">
+            <a href="{{ url_for('download', name=f.name) }}">{{ f.name }}</a>
+            <span class="muted">{{ f.size_kb }} KB</span>
+          </div>
+          <form method="post" action="{{ url_for('delete', name=f.name) }}">
+            <button class="mini" type="submit">Delete</button>
+          </form>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted">Nothing converted yet.</p>
+    {% endif %}
+  </div>
+
+<script>
+  const drop = document.getElementById('drop');
+  const input = document.getElementById('pdf');
+  const fname = document.getElementById('fname');
+  const go = document.getElementById('go');
+  const form = document.getElementById('form');
+  const spinner = document.getElementById('spinner');
+
+  function setName() {
+    if (input.files.length) {
+      fname.textContent = input.files[0].name;
+      go.disabled = false;
+    }
+  }
+  input.addEventListener('change', setName);
+  ['dragover','dragenter'].forEach(e =>
+    drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('hover'); }));
+  ['dragleave','drop'].forEach(e =>
+    drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('hover'); }));
+  drop.addEventListener('drop', ev => {
+    if (ev.dataTransfer.files.length) { input.files = ev.dataTransfer.files; setName(); }
+  });
+  form.addEventListener('submit', () => { go.disabled = true; spinner.classList.add('on'); });
+</script>
+</body>
+</html>
